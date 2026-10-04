@@ -557,6 +557,28 @@ pub trait Hooks: Send {
         Ok(ctx)
     }
 
+    /// Constructs the queue provider before [`Self::after_context`].
+    ///
+    /// The default uses Loco's built-in `queue` configuration. Override this
+    /// to supply a third-party [`bgworker::QueueProvider`] wrapped with
+    /// [`Queue::from_provider`], without configuring a built-in backend.
+    /// Return `None` for worker modes that do not use a queue.
+    ///
+    /// Custom providers manage their own configuration and migrations. Without
+    /// a built-in `queue` configuration, boot does not call `Queue::setup`.
+    /// This hook can run more than once during CLI startup; it must not start
+    /// worker loops. Worker execution is started separately by Loco.
+    ///
+    /// # Errors
+    /// Returns an error if the provider cannot be constructed. Boot also rejects
+    /// a missing provider when the configured mode is `BackgroundQueue`.
+    async fn queue_provider(
+        _environment: &Environment,
+        config: &Config,
+    ) -> Result<Option<Arc<Queue>>> {
+        bgworker::create_queue_provider(config).await
+    }
+
     /// Connects custom workers to the application using the provided
     /// [`Queue`] and [`AppContext`].
     async fn connect_workers(ctx: &AppContext, queue: &Queue) -> Result<()>;

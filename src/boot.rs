@@ -405,7 +405,10 @@ pub async fn create_context<H: Hooks>(
         None
     };
 
-    let queue_provider = bgworker::create_queue_provider(&config).await?;
+    let queue_provider = H::queue_provider(environment, &config).await?;
+    if config.workers.mode == WorkerMode::BackgroundQueue && queue_provider.is_none() {
+        return Err(Error::QueueProviderMissing);
+    }
     let ctx = AppContext {
         environment: environment.clone(),
         #[cfg(feature = "with-db")]
@@ -686,6 +689,86 @@ mod tests {
                 flag.store(true, Ordering::SeqCst);
             }
         }
+    }
+
+    struct CustomQueueHooks;
+
+    #[async_trait]
+    impl Hooks for CustomQueueHooks {
+        fn app_name() -> &'static str {
+            "custom_queue_test"
+        }
+
+        async fn boot(_: StartMode, _: &Environment, _: Config) -> Result<BootResult> {
+            unreachable!()
+        }
+
+        async fn queue_provider(
+            environment: &Environment,
+            config: &Config,
+        ) -> Result<Option<Arc<Queue>>> {
+            assert_eq!(config.workers.mode, WorkerMode::BackgroundQueue);
+            assert!(config.queue.is_none());
+            Ok((environment == &Environment::Test).then(|| Arc::new(Queue::empty())))
+        }
+
+        async fn connect_workers(_: &AppContext, _: &Queue) -> Result<()> {
+            Ok(())
+        }
+
+        fn register_tasks(_: &mut task::Tasks) {}
+
+        #[cfg(feature = "with-db")]
+        async fn truncate(_: &AppContext) -> Result<()> {
+            Ok(())
+        }
+
+        #[cfg(feature = "with-db")]
+        async fn seed(_: &AppContext, _: &Path) -> Result<()> {
+            Ok(())
+        }
+
+        fn routes(_: &AppContext) -> AppRoutes {
+            AppRoutes::empty()
+        }
+    }
+
+    #[tokio::test]
+    async fn test_custom_queue_provider_boots_without_builtin_configuration() {
+        let mut config = crate::tests_cfg::config::test_config();
+        config.logger.pretty_backtrace = false;
+        config.workers.mode = WorkerMode::BackgroundQueue;
+        // Match the CLI's initial context creation followed by application boot.
+        for _ in 0..2 {
+            let ctx = create_context::<CustomQueueHooks>(&Environment::Test, config)
+                .await
+                .expect("custom provider can boot without built-in queue configuration");
+            assert!(ctx.queue_provider.is_some());
+            assert_eq!(ctx.config.workers.mode, WorkerMode::BackgroundQueue);
+            config = ctx.config;
+        }
+        let result = create_context::<CustomQueueHooks>(&Environment::Development, config).await;
+        assert!(matches!(result, Err(Error::QueueProviderMissing)));
+    }
+
+    #[tokio::test]
+    async fn test_default_queue_provider_hook_preserves_builtin_validation() {
+        let mut config = crate::tests_cfg::config::test_config();
+        for mode in [WorkerMode::ForegroundBlocking, WorkerMode::BackgroundAsync] {
+            config.workers.mode = mode;
+            assert!(
+                ShutdownFlagHooks::queue_provider(&Environment::Test, &config)
+                    .await
+                    .expect("non-queued mode")
+                    .is_none()
+            );
+        }
+        config.workers.mode = WorkerMode::BackgroundQueue;
+        assert!(
+            ShutdownFlagHooks::queue_provider(&Environment::Test, &config)
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]

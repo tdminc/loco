@@ -39,6 +39,7 @@ Have a default implementation; override to change behavior.
 | `middlewares` | `fn middlewares(ctx: &AppContext) -> Vec<Box<dyn MiddlewareLayer>>` (`:401-403`) | Returns `middleware::default_middleware_stack(ctx)`. |
 | `before_run` | `async fn before_run(_app_context: &AppContext) -> Result<()>` (`:408`) | Returns `Ok(())` — no-op. |
 | `after_context` | `async fn after_context(ctx: AppContext) -> Result<AppContext>` (`:416`) | Returns `Ok(ctx)` unchanged. |
+| `queue_provider` | `async fn queue_provider(environment: &Environment, config: &Config) -> Result<Option<Arc<Queue>>>` | Constructs a built-in queue from configuration. Override to supply a third-party provider. |
 | `dump` | `#[cfg(feature = "with-db")] async fn dump(ctx: &AppContext, base: &Path) -> Result<()>` (`:593-596`) | Dumps every table to YAML fixtures under `base` via schema introspection (`db::dump_tables`). The counterpart to `seed`, backing `cargo loco db seed --dump`. Override it to dump specific entities with the typed, streaming `db::dump::<users::ActiveModel>(..)` instead, for full type fidelity and bounded memory. Only on the trait when `with-db` is enabled. |
 | `on_shutdown` | `async fn on_shutdown(_ctx: &AppContext)` (`:442`) | No-op. |
 
@@ -61,6 +62,16 @@ async fn load_config(env: &Environment) -> Result<Config>
 ```
 
 Runs during boot to produce the `Config` passed into `boot`. The default is `env.load()` (the standard `config/{env}.yaml` file resolution). Override to load configuration from a different source (e.g. a remote config service) while still returning a `Config`.
+
+### `queue_provider` — supply a custom queue backend
+
+```rust no-syntax-check="signature listing — no body, by design"
+async fn queue_provider(environment: &Environment, config: &Config) -> Result<Option<Arc<Queue>>>
+```
+
+Runs before `after_context` to construct the application's queue. The default delegates to `bgworker::create_queue_provider`, using the built-in backend configuration. Override to return `Some(Arc::new(Queue::from_provider(provider)))` with `workers.mode: BackgroundQueue` and no built-in `queue:` section. Returning `None` in `BackgroundQueue` mode fails boot with `Error::QueueProviderMissing`.
+
+Custom providers manage their own connection configuration and migrations. Without a built-in `queue:` section, automatic queue setup and flushing do not run. This hook may run more than once during CLI startup; construct the provider here, but leave worker execution to Loco's start lifecycle. Return `None` for modes that do not use a queue.
 
 ### `after_context` — post-process `AppContext`
 
